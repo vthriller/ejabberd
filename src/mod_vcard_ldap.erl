@@ -72,6 +72,7 @@
          search_reported = []       :: [{binary(), binary()}],
          search_reported_attrs = [] :: [binary()],
 	 deref_aliases = never      :: never | searching | finding | always,
+         access_vjud                :: atom(),
          matches = 0                :: non_neg_integer()}).
 
 -define(VCARD_MAP,
@@ -438,7 +439,16 @@ ldap_attribute_to_vcard(_, _) -> none.
 				SearchFields)}]).
 
 do_route(State, From, To, Packet) ->
-    spawn(?MODULE, route, [State, From, To, Packet]).
+    case acl:match_rule(State#state.serverhost, State#state.access_vjud, From) of
+        deny ->
+            Lang = fxml:get_tag_attr_s(<<"xml:lang">>, Packet),
+            Txt = <<"Denied by ACL">>,
+            Err = jlib:make_error_reply(Packet, ?ERRT_FORBIDDEN(Lang, Txt)),
+            ejabberd_router:route(To, From, Err);
+        allow ->
+            spawn(?MODULE, route, [State, From, To, Packet])
+    end.
+
 
 route(State, From, To, Packet) ->
     #jid{user = User, resource = Resource} = To,
@@ -813,6 +823,9 @@ parse_options(Host, Opts) ->
 						    end,
 						    SearchReported)
 					++ UIDAttrs),
+    AccessVjud = gen_mod:get_opt(access_vjud, Opts,
+                           fun(A) when is_atom(A) -> A end,
+                           allow),
     #state{serverhost = Host, myhost = MyHost,
 	   eldap_id = Eldap_ID, search = Search,
 	   servers = Cfg#eldap_config.servers,
@@ -829,6 +842,7 @@ parse_options(Host, Opts) ->
 	   search_fields = SearchFields,
 	   search_reported = SearchReported,
 	   search_reported_attrs = SearchReportedAttrs,
+	   access_vjud = AccessVjud,
 	   matches = Matches}.
 
 transform_module_options(Opts) ->
@@ -850,6 +864,8 @@ check_filter(F) ->
     {ok, _} = eldap_filter:parse(NewF),
     NewF.
 
+mod_opt_type(access_vjud) ->
+    fun (A) when is_atom(A) -> A end;
 mod_opt_type(host) -> fun iolist_to_binary/1;
 mod_opt_type(iqdisc) -> fun gen_iq_handler:check_type/1;
 mod_opt_type(ldap_filter) -> fun check_filter/1;
@@ -923,7 +939,7 @@ mod_opt_type(ldap_tls_verify) ->
 	(false) -> false
     end;
 mod_opt_type(_) ->
-    [host, iqdisc, ldap_filter, ldap_search_fields,
+    [access_vjud, host, iqdisc, ldap_filter, ldap_search_fields,
      ldap_search_reported, ldap_uids, ldap_vcard_map,
      matches, search, deref_aliases, ldap_backups, ldap_base,
      ldap_deref_aliases, ldap_encrypt, ldap_password,
